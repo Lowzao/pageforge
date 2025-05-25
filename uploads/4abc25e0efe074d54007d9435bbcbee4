@@ -1,0 +1,364 @@
+const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const Quarto = require('../../models/Quarto'); // Modelo do quarto
+const Sistema = require('../../models/Sistema'); // Modelo do sistema
+const client = require('../../index')
+
+client.on('interactionCreate', async (interaction) => {
+  // Verifica se é uma interação de select menu
+  if (interaction.isSelectMenu() && interaction.customId === 'menu_quartos') {
+    const numeroQuarto = parseInt(interaction.values[0]); // Pega o valor do quarto selecionado
+    const quarto = await Quarto.findOne({ numero: numeroQuarto });
+
+    if (!quarto) {
+      return interaction.reply({ content: 'Quarto não encontrado.', ephemeral: true });
+    }
+
+    // Se o quarto não estiver ocupado, mostra o modal para registrar o quarto
+    if (!quarto.ocupado) {
+      const modal = new ModalBuilder()
+        .setCustomId(`modal_registro_${numeroQuarto}`)
+        .setTitle(`Registrar Quarto ${numeroQuarto}`);
+
+      // Criação dos campos do modal
+      const idInput = new TextInputBuilder()
+        .setCustomId('idUsuario')
+        .setLabel('ID do Usuário')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const nomeInput = new TextInputBuilder()
+        .setCustomId('nomeUsuario')
+        .setLabel('Nome do Usuário')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const obsInput = new TextInputBuilder()
+        .setCustomId('observacao')
+        .setLabel('Observação')
+        .setStyle(TextInputStyle.Paragraph);
+
+      const dataInput = new TextInputBuilder()
+        .setCustomId('dataCheckin')
+        .setLabel('Data de Check-in (YYYY-MM-DD)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true); // Campo de data
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(idInput),
+        new ActionRowBuilder().addComponents(nomeInput),
+        new ActionRowBuilder().addComponents(obsInput),
+        new ActionRowBuilder().addComponents(dataInput) // Adicionando o campo de data
+      );
+
+      // Envia o modal para o usuário
+      await interaction.showModal(modal); // Envia o modal ao usuário
+    } else {
+      // Se o quarto já estiver ocupado, mostra as informações do quarto e um botão de Check-out
+      const embed = new EmbedBuilder()
+        .setTitle(`Quarto ${numeroQuarto} - Ocupado`)
+        .setDescription(
+          `**ID**: ${quarto.idUsuario}\n**Nome**: ${quarto.nomeUsuario}\n**Check-in**: ${quarto.checkIn}\n**Observação**: ${quarto.observacao}`
+        )
+        .setColor('#ff0000'); // Cor vermelha para quarto ocupado
+
+      const checkOutButton = new ButtonBuilder()
+        .setCustomId(`check_out_${numeroQuarto}`)
+        .setLabel('Check-out')
+        .setStyle(ButtonStyle.Danger); // Botão de Check-out
+
+      const row = new ActionRowBuilder().addComponents(checkOutButton);
+
+      return interaction.reply({
+        embeds: [embed],
+        components: [row],
+        ephemeral: true
+      });
+    }
+  }
+
+  // Verifica se a interação é uma submissão de modal
+  if (interaction.isModalSubmit()) {
+    const modalId = interaction.customId;
+
+    // Se for o modal de registro de quarto
+    if (modalId.startsWith('modal_registro_')) {
+      const numeroQuarto = parseInt(modalId.split('_')[2]); // Extrai o número do quarto
+      const quarto = await Quarto.findOne({ numero: numeroQuarto });
+
+      if (!quarto) {
+        return interaction.reply({ content: 'Quarto não encontrado.', ephemeral: true });
+      }
+
+      // Coleta os dados do modal
+      const idUsuario = interaction.fields.getTextInputValue('idUsuario');
+      const nomeUsuario = interaction.fields.getTextInputValue('nomeUsuario');
+      const observacao = interaction.fields.getTextInputValue('observacao');
+      const dataCheckin = interaction.fields.getTextInputValue('dataCheckin');
+
+      // Atualiza o quarto com as informações coletadas
+      quarto.ocupado = true;
+      quarto.idUsuario = idUsuario;
+      quarto.nomeUsuario = nomeUsuario;
+      quarto.observacao = observacao;
+      quarto.checkIn = dataCheckin;
+
+      // Salva as mudanças no banco de dados
+      await quarto.save();
+
+      // Atualiza a embed com o status do quarto (vermelho, ocupado)
+      const sistema = await Sistema.findOne({ guildId: interaction.guild.id });
+      const canal = interaction.channel;
+      const mensagem = await canal.messages.fetch(sistema.mensagemId);
+
+      const embed = new EmbedBuilder()
+        .setTitle('Controle de Quartos do Hotel')
+        .setColor('#2b2d31')
+        .setDescription(
+          (await Quarto.find()).map((q) =>
+            q.numero === numeroQuarto
+              ? `🔴 Quarto ${q.numero} (Ocupado)`
+              : `${q.ocupado ? '🔴' : '🟢'} Quarto ${q.numero}`
+          ).join('\n')
+        )
+        .setTimestamp();
+
+      await mensagem.edit({ embeds: [embed] });
+
+      // Responde ao usuário confirmando o registro
+      await interaction.reply({
+        content: `Quarto ${numeroQuarto} registrado com sucesso!`,
+        ephemeral: true
+      });
+    }
+  }
+
+  // Verifica se a interação é o botão de Check-out
+  if (interaction.isButton() && interaction.customId.startsWith('check_out_')) {
+    const numeroQuarto = parseInt(interaction.customId.split('_')[2]);
+    const quarto = await Quarto.findOne({ numero: numeroQuarto });
+
+    if (!quarto) {
+      return interaction.reply({ content: 'Quarto não encontrado.', ephemeral: true });
+    }
+
+    // Limpa os dados do quarto e marca como disponível
+    quarto.ocupado = false;
+    quarto.idUsuario = null;
+    quarto.nomeUsuario = null;
+    quarto.observacao = null;
+    quarto.checkIn = null;
+
+    // Salva as mudanças no banco de dados
+    await quarto.save();
+
+    // Atualiza a embed com o status do quarto (verde, disponível)
+    const sistema = await Sistema.findOne({ guildId: interaction.guild.id });
+    const canal = interaction.channel;
+    const mensagem = await canal.messages.fetch(sistema.mensagemId);
+
+    const embed = new EmbedBuilder()
+      .setTitle('Controle de Quartos do Hotel')
+      .setColor('#2b2d31')
+      .setDescription(
+        (await Quarto.find()).map((q) =>
+          q.numero === numeroQuarto
+            ? `🟢 Quarto ${q.numero} (Disponível)`
+            : `${q.ocupado ? '🔴' : '🟢'} Quarto ${q.numero}`
+        ).join('\n')
+      )
+      .setTimestamp();
+
+    await mensagem.edit({ embeds: [embed] });
+
+    // Responde ao usuário confirmando o check-out
+    await interaction.reply({
+      content: `Check-out realizado com sucesso para o Quarto ${numeroQuarto}.`,
+      ephemeral: true
+    });
+  }
+});
+
+
+
+
+
+
+///////////////////////
+
+
+
+const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const Quarto = require('../../models/Quarto'); // Modelo do quarto
+const Sistema = require('../../models/Sistema'); // Modelo do sistema
+const client = require('../../index')
+
+client.on('interactionCreate', async (interaction) => {
+  // Verifica se é uma interação de select menu
+  if (interaction.isSelectMenu() && interaction.customId === 'menu_quartos') {
+    const numeroQuarto = parseInt(interaction.values[0]); // Pega o valor do quarto selecionado
+    const quarto = await Quarto.findOne({ numero: numeroQuarto });
+
+    if (!quarto) {
+      return interaction.reply({ content: 'Quarto não encontrado.', ephemeral: true });
+    }
+
+    // Se o quarto não estiver ocupado, mostra o modal para registrar o quarto
+    if (!quarto.ocupado) {
+      const modal = new ModalBuilder()
+        .setCustomId(`modal_registro_${numeroQuarto}`)
+        .setTitle(`Registrar Quarto ${numeroQuarto}`);
+
+      // Criação dos campos do modal
+      const idInput = new TextInputBuilder()
+        .setCustomId('idUsuario')
+        .setLabel('ID do Usuário')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const nomeInput = new TextInputBuilder()
+        .setCustomId('nomeUsuario')
+        .setLabel('Nome do Usuário')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const obsInput = new TextInputBuilder()
+        .setCustomId('observacao')
+        .setLabel('Observação')
+        .setStyle(TextInputStyle.Paragraph);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(idInput),
+        new ActionRowBuilder().addComponents(nomeInput),
+        new ActionRowBuilder().addComponents(obsInput)
+      );
+
+      // Envia o modal para o usuário
+      await interaction.showModal(modal); // Envia o modal ao usuário
+    } else {
+      // Se o quarto já estiver ocupado, mostra as informações do quarto e um botão de Check-out
+      const embed = new EmbedBuilder()
+        .setTitle(`Quarto ${numeroQuarto} - Ocupado`)
+        .setDescription(
+          `**ID**: ${quarto.idUsuario}\n**Nome**: ${quarto.nomeUsuario}\n**Check-in**: ${quarto.checkIn}\n**Observação**: ${quarto.observacao}`
+        )
+        .setColor('#ff0000'); // Cor vermelha para quarto ocupado
+
+      const checkOutButton = new ButtonBuilder()
+        .setCustomId(`check_out_${numeroQuarto}`)
+        .setLabel('Check-out')
+        .setStyle(ButtonStyle.Danger); // Botão de Check-out
+
+      const row = new ActionRowBuilder().addComponents(checkOutButton);
+
+      return interaction.reply({
+        embeds: [embed],
+        components: [row],
+        ephemeral: true
+      });
+    }
+  }
+
+  // Verifica se a interação é uma submissão de modal
+  if (interaction.isModalSubmit()) {
+    const modalId = interaction.customId;
+
+    // Se for o modal de registro de quarto
+    if (modalId.startsWith('modal_registro_')) {
+      const numeroQuarto = parseInt(modalId.split('_')[2]); // Extrai o número do quarto
+      const quarto = await Quarto.findOne({ numero: numeroQuarto });
+
+      if (!quarto) {
+        return interaction.reply({ content: 'Quarto não encontrado.', ephemeral: true });
+      }
+
+      // Coleta os dados do modal
+      const idUsuario = interaction.fields.getTextInputValue('idUsuario');
+      const nomeUsuario = interaction.fields.getTextInputValue('nomeUsuario');
+      const observacao = interaction.fields.getTextInputValue('observacao');
+
+      // Preenche a data de check-in automaticamente com a data atual
+      const dataCheckin = new Date().toISOString().split('T')[0]; // Formato YYYY-MM-DD
+
+      // Atualiza o quarto com as informações coletadas
+      quarto.ocupado = true;
+      quarto.idUsuario = idUsuario;
+      quarto.nomeUsuario = nomeUsuario;
+      quarto.observacao = observacao;
+      quarto.checkIn = dataCheckin;
+
+      // Salva as mudanças no banco de dados
+      await quarto.save();
+
+      // Atualiza a embed com o status do quarto (vermelho, ocupado)
+      const sistema = await Sistema.findOne({ guildId: interaction.guild.id });
+      const canal = interaction.channel;
+      const mensagem = await canal.messages.fetch(sistema.mensagemId);
+
+      const embed = new EmbedBuilder()
+        .setTitle('Controle de Quartos do Hotel')
+        .setColor('#2b2d31')
+        .setDescription(
+          (await Quarto.find()).map((q) =>
+            q.numero === numeroQuarto
+              ? `🔴 Quarto ${q.numero} (Ocupado)`
+              : `${q.ocupado ? '🔴' : '🟢'} Quarto ${q.numero}`
+          ).join('\n')
+        )
+        .setTimestamp();
+
+      await mensagem.edit({ embeds: [embed] });
+
+      // Responde ao usuário confirmando o registro
+      await interaction.reply({
+        content: `Quarto ${numeroQuarto} registrado com sucesso!`,
+        ephemeral: true
+      });
+    }
+  }
+
+  // Verifica se a interação é o botão de Check-out
+  if (interaction.isButton() && interaction.customId.startsWith('check_out_')) {
+    const numeroQuarto = parseInt(interaction.customId.split('_')[2]);
+    const quarto = await Quarto.findOne({ numero: numeroQuarto });
+
+    if (!quarto) {
+      return interaction.reply({ content: 'Quarto não encontrado.', ephemeral: true });
+    }
+
+    // Limpa os dados do quarto e marca como disponível
+    quarto.ocupado = false;
+    quarto.idUsuario = null;
+    quarto.nomeUsuario = null;
+    quarto.observacao = null;
+    quarto.checkIn = null;
+
+    // Salva as mudanças no banco de dados
+    await quarto.save();
+
+    // Atualiza a embed com o status do quarto (verde, disponível)
+    const sistema = await Sistema.findOne({ guildId: interaction.guild.id });
+    const canal = interaction.channel;
+    const mensagem = await canal.messages.fetch(sistema.mensagemId);
+
+    const embed = new EmbedBuilder()
+      .setTitle('Controle de Quartos do Hotel')
+      .setColor('#2b2d31')
+      .setDescription(
+        (await Quarto.find()).map((q) =>
+          q.numero === numeroQuarto
+            ? `🟢 Quarto ${q.numero}`
+            : `${q.ocupado ? '🔴' : '🟢'} Quarto ${q.numero}`
+        ).join('\n')
+      )
+      .setTimestamp();
+
+    await mensagem.edit({ embeds: [embed] });
+
+    // Responde ao usuário confirmando o check-out
+    await interaction.reply({
+      content: `Check-out realizado com sucesso para o Quarto ${numeroQuarto}.`,
+      ephemeral: true
+    });
+  }
+});
+
